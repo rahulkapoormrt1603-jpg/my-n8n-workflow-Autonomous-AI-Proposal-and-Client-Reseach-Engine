@@ -1,0 +1,649 @@
+{
+  "name": "Autonomous AI Proposal & Client Research Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "proposal-engine",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "027a200b-d193-46cd-aa54-71a995c39197",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2032,
+        624
+      ],
+      "webhookId": "669c186a-9b14-435c-b33a-e34ec870c914"
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawInput = $input.first().json;\nconsole.log(\"=== RAW WEBHOOK INPUT ===\");\nconsole.log(JSON.stringify(rawInput, null, 2));\n\nconst body = rawInput.body || rawInput;\nconsole.log(\"=== PARSED BODY ===\");\nconsole.log(JSON.stringify(body, null, 2));\n\nconst company_website = body.website || body.company_website || \"\";\nconst service_to_pitch = body.service || body.service_to_pitch || \"\";\nconst session_id = body.session_id || `session_${Date.now()}`;\nconst user_name = body.name || body.user_name || \"User\";\n\nif (!company_website || !service_to_pitch) {\n  console.error(\"Missing required fields. Received:\", { company_website, service_to_pitch });\n  throw new Error(\"Missing required fields: website and service\");\n}\n\nconsole.log(\"=== PARSED OUTPUT ===\");\nconsole.log(JSON.stringify({ company_website, service_to_pitch, session_id, user_name }, null, 2));\n\nreturn [{\n  json: {\n    company_website,\n    service_to_pitch,\n    session_id,\n    user_name,\n    timestamp: new Date().toISOString(),\n    status: \"processing\"\n  }\n}];"
+      },
+      "id": "530b31d3-57f5-4f4a-985b-3dab9be0af78",
+      "name": "Input Parser",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1808,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"error\", \"message\": \"An error occurred during processing\" }",
+        "options": {
+          "responseCode": 400,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              }
+            ]
+          }
+        }
+      },
+      "id": "71c551db-1dc6-41a0-b323-d3edce53baff",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -2032,
+        1040
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $(\"Input Parser\").first().json;\nconst memoryData = $input.first().json;\n\nconst messages = memoryData.messages || [];\nconst memory = messages\n  .map(msg => `${msg.role}: ${msg.content}`)\n  .join(\"\\n\");\n\nreturn [{\n  json: {\n    ...parsed,\n    prior_memory: memory || \"No prior memory found for this session.\",\n    has_memory: messages.length > 0\n  }\n}];"
+      },
+      "id": "eb06bcaa-f7f3-41ae-b00b-78e6ae711549",
+      "name": "Format Memory Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1360,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a Planner Agent inside an autonomous multi-agent AI workflow system.\n\nYour ONLY job is to analyze the user's request and decompose it into a structured execution plan for the downstream specialized agents.\n\nAlways respond with valid JSON only. No explanation, no markdown.\n\nOutput format:\n{\n  \"company_name\": \"extracted company name or domain\",\n  \"industry\": \"inferred industry vertical\",\n  \"pitch_angle\": \"specific angle to pitch the service\",\n  \"research_focus\": [\"list of specific research questions to answer\"],\n  \"competitor_focus\": [\"list of competitor angles to explore\"],\n  \"pricing_signals\": [\"signals to use for pricing estimation\"],\n  \"proposal_tone\": \"formal | semi-formal | startup-friendly\",\n  \"key_pain_points\": [\"inferred pain points of this company\"],\n  \"plan_summary\": \"one sentence summary of the execution plan\"\n}",
+              "role": "system"
+            },
+            {
+              "content": "Company Website: {{ $json.company_website }}\nService to Pitch: {{ $json.service_to_pitch }}\nPrior Memory: {{ $json.prior_memory }}\n\nDecompose this into a structured agent execution plan."
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 800,
+          "temperature": 0.3
+        }
+      },
+      "id": "7bbd0bae-9bb2-4462-a288-6e3060543094",
+      "name": "Planner Agent",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [
+        -1136,
+        624
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "TslaIfCqC16MWbfP",
+          "name": "n8n free OpenAI API credits"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const plannerRaw = $input.first().json.message?.content || $input.first().json.choices?.[0]?.message?.content || '{}';\nlet plan;\ntry {\n  plan = JSON.parse(plannerRaw);\n} catch(e) {\n  const match = plannerRaw.match(/\\{[\\s\\S]*\\}/);\n  plan = match ? JSON.parse(match[0]) : {};\n}\n\nconst base = $('Format Memory Context').first().json;\n\nreturn [{\n  json: {\n    ...base,\n    plan\n  }\n}];"
+      },
+      "id": "d30313ba-9eb3-4f12-9ba9-f7e71460b991",
+      "name": "Parse Planner Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -784,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a Research Agent in an autonomous multi-agent AI workflow system.\n\nYour job: deeply research the given company and produce a structured intelligence report.\n\nRespond ONLY with valid JSON. No markdown, no explanation.\n\nOutput format:\n{\n  \"company_name\": \"\",\n  \"website\": \"\",\n  \"industry\": \"\",\n  \"company_size_estimate\": \"\",\n  \"business_model\": \"\",\n  \"target_customers\": \"\",\n  \"recent_signals\": [\"growth indicators, news, or product signals\"],\n  \"technology_stack_hints\": [\"\"],\n  \"decision_maker_persona\": \"\",\n  \"likely_budget_tier\": \"startup | smb | mid-market | enterprise\",\n  \"pain_points\": [\"\"],\n  \"opportunities\": [\"\"],\n  \"research_confidence\": \"high | medium | low\"\n}",
+              "role": "system"
+            },
+            {
+              "content": "Company Website: {{ $json.company_website }}\nIndustry: {{ $json.plan.industry }}\nResearch Focus: {{ $json.plan.research_focus }}\nKey Pain Points: {{ $json.plan.key_pain_points }}\n\nProduce a detailed company intelligence report."
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 1000,
+          "temperature": 0.2
+        }
+      },
+      "id": "a0260d52-85c9-4499-b097-8e8e32832527",
+      "name": "Research Agent",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [
+        -560,
+        432
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "TslaIfCqC16MWbfP",
+          "name": "n8n free OpenAI API credits"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "numberInputs": 3,
+        "options": {}
+      },
+      "id": "31dd416e-8351-4276-9b74-6d17aedf5903",
+      "name": "Merge Agent Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -208,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a Competitor Analysis Agent in an autonomous multi-agent AI workflow system.\n\nYour job: identify competitors, market gaps, and strategic positioning opportunities for the service being pitched.\n\nRespond ONLY with valid JSON. No markdown, no explanation.\n\nOutput format:\n{\n  \"main_competitors\": [{\"name\": \"\", \"weakness\": \"\", \"how_to_differentiate\": \"\"}],\n  \"market_gaps\": [\"\"],\n  \"positioning_angle\": \"\",\n  \"unique_value_props\": [\"\"],\n  \"objection_handling\": [{\"objection\": \"\", \"counter\": \"\"}],\n  \"competitive_advantage_summary\": \"\"\n}",
+              "role": "system"
+            },
+            {
+              "content": "Company: {{ $json.company_website }}\nService to Pitch: {{ $json.service_to_pitch }}\nIndustry: {{ $json.plan.industry }}\nPitch Angle: {{ $json.plan.pitch_angle }}\nCompetitor Focus: {{ $json.plan.competitor_focus }}\n\nAnalyze the competitive landscape and provide strategic positioning."
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 800,
+          "temperature": 0.3
+        }
+      },
+      "id": "64681554-95cf-4cf1-9b24-6628d0019964",
+      "name": "Competitor Analysis Agent",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [
+        -560,
+        624
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "TslaIfCqC16MWbfP",
+          "name": "n8n free OpenAI API credits"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a Pricing Strategy Agent in an autonomous multi-agent AI workflow system.\n\nYour job: generate a realistic, tiered pricing strategy for the service being pitched, tailored to the company's size and budget tier.\n\nRespond ONLY with valid JSON. No markdown, no explanation.\n\nOutput format:\n{\n  \"recommended_model\": \"fixed | retainer | milestone | hourly\",\n  \"tiers\": [\n    {\"name\": \"Starter\", \"price_range\": \"\", \"deliverables\": [], \"ideal_for\": \"\"},\n    {\"name\": \"Growth\", \"price_range\": \"\", \"deliverables\": [], \"ideal_for\": \"\"},\n    {\"name\": \"Enterprise\", \"price_range\": \"\", \"deliverables\": [], \"ideal_for\": \"\"}\n  ],\n  \"recommended_tier\": \"Starter | Growth | Enterprise\",\n  \"anchor_price\": \"\",\n  \"justification\": \"\",\n  \"discount_strategy\": \"\"\n}",
+              "role": "system"
+            },
+            {
+              "content": "Service to Pitch: {{ $json.service_to_pitch }}\nBudget Tier: {{ $json.plan.pricing_signals }}\nCompany Size Estimate: from research\nIndustry: {{ $json.plan.industry }}\n\nGenerate a strategic pricing plan."
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 800,
+          "temperature": 0.2
+        }
+      },
+      "id": "1d9d1517-b290-45cb-bfbb-822bc2cca97c",
+      "name": "Pricing Agent",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [
+        -560,
+        816
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "TslaIfCqC16MWbfP",
+          "name": "n8n free OpenAI API credits"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const researchRaw = $('Research Agent').first().json.message?.content || $('Research Agent').first().json.choices?.[0]?.message?.content || '{}';\nconst competitorRaw = $('Competitor Analysis Agent').first().json.message?.content || $('Competitor Analysis Agent').first().json.choices?.[0]?.message?.content || '{}';\nconst pricingRaw = $('Pricing Agent').first().json.message?.content || $('Pricing Agent').first().json.choices?.[0]?.message?.content || '{}';\n\nfunction safeJSON(raw) {\n  try { return JSON.parse(raw); } catch(e) {\n    const m = raw.match(/\\{[\\s\\S]*\\}/);\n    return m ? JSON.parse(m[0]) : {};\n  }\n}\n\nconst research = safeJSON(researchRaw);\nconst competitor = safeJSON(competitorRaw);\nconst pricing = safeJSON(pricingRaw);\n\nconst base = $('Parse Planner Output').first().json;\n\nreturn [{\n  json: {\n    ...base,\n    research,\n    competitor,\n    pricing\n  }\n}];"
+      },
+      "id": "44c90be5-2fbf-4cab-861f-2b4509f58d04",
+      "name": "Aggregate Agent Outputs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        16,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a Proposal Writer Agent in an autonomous multi-agent AI workflow system.\n\nYour job: write a high-converting, personalized business proposal and a cold outreach email using all the research, competitive, and pricing intelligence provided.\n\nWrite like a senior consultant — confident, specific, value-focused. Never generic.\n\nRespond ONLY with valid JSON. No markdown wrapping the JSON itself.\n\nOutput format:\n{\n  \"subject_line\": \"email subject line\",\n  \"outreach_email\": \"full personalized cold email (plain text, ready to send)\",\n  \"proposal\": {\n    \"executive_summary\": \"\",\n    \"problem_statement\": \"\",\n    \"proposed_solution\": \"\",\n    \"scope_of_work\": [\"\"],\n    \"why_us\": \"\",\n    \"timeline\": \"\",\n    \"investment\": \"\",\n    \"next_steps\": \"\",\n    \"call_to_action\": \"\"\n  }\n}",
+              "role": "system"
+            },
+            {
+              "content": "Company Website: {{ $json.company_website }}\nService to Pitch: {{ $json.service_to_pitch }}\nProposal Tone: {{ $json.plan.proposal_tone }}\n\nResearch Intelligence:\n{{ JSON.stringify($json.research, null, 2) }}\n\nCompetitive Intelligence:\n{{ JSON.stringify($json.competitor, null, 2) }}\n\nPricing Strategy:\n{{ JSON.stringify($json.pricing, null, 2) }}\n\nWrite a winning proposal and outreach email."
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 2000,
+          "temperature": 0.6
+        }
+      },
+      "id": "b9b4c132-05d8-40c1-922c-2323e2a597be",
+      "name": "Proposal Writer Agent",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [
+        240,
+        624
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "TslaIfCqC16MWbfP",
+          "name": "n8n free OpenAI API credits"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const proposalRaw = $('Proposal Writer Agent').first().json.message?.content || $('Proposal Writer Agent').first().json.choices?.[0]?.message?.content || '{}';\n\nfunction safeJSON(raw) {\n  try { return JSON.parse(raw); } catch(e) {\n    const m = raw.match(/\\{[\\s\\S]*\\}/);\n    return m ? JSON.parse(m[0]) : {};\n  }\n}\n\nconst proposal = safeJSON(proposalRaw);\nconst base = $('Aggregate Agent Outputs').first().json;\n\nreturn [{\n  json: {\n    ...base,\n    proposal_output: proposal\n  }\n}];"
+      },
+      "id": "ac79b95f-5086-4940-9ad9-79b8867a713a",
+      "name": "Parse Proposal Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        592,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a JSON output generator. Your ONLY job is to return a valid JSON object.\n\nCRITICAL RULES:\n- Return ONLY the JSON object itself\n- NO markdown code blocks (no ```json or ```)\n- NO explanatory text before or after the JSON\n- NO comments inside the JSON\n- The response must start with { and end with }\n- All string values must use double quotes\n- All keys must use double quotes\n- NEVER output n8n expression syntax like {{ $json.field }} - always use the actual resolved values provided\n- All values must be real data, not template placeholders\n\nReturn a JSON object with these exact keys:\n{\n  \"status\": \"success\",\n  \"session_id\": \"<use the actual session_id value provided>\",\n  \"company_analyzed\": \"<use the actual company website value provided>\",\n  \"service_pitched\": \"<use the actual service value provided>\",\n  \"executive_summary\": \"2-3 sentence summary combining all intelligence gathered\",\n  \"company_intelligence\": {},\n  \"competitive_analysis\": {},\n  \"pricing_strategy\": {},\n  \"outreach_email\": { \"subject\": \"\", \"body\": \"\" },\n  \"proposal\": {}\n}\n\nFill in the nested objects with the actual data from the research, competitor, pricing, and proposal outputs provided in the user message.",
+              "role": "system"
+            },
+            {
+              "content": "Session ID: {{ $json.session_id }}\nCompany: {{ $json.company_website }}\nService: {{ $json.service_to_pitch }}\nTimestamp: {{ $json.timestamp }}\n\nResearch:\n{{ JSON.stringify($json.research, null, 2) }}\n\nCompetitor Analysis:\n{{ JSON.stringify($json.competitor, null, 2) }}\n\nPricing:\n{{ JSON.stringify($json.pricing, null, 2) }}\n\nProposal Output:\n{{ JSON.stringify($json.proposal_output, null, 2) }}\n\nReturn ONLY the JSON object with all real values filled in. Start your response with { and end with }. No other text."
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {
+          "maxTokens": 2000,
+          "temperature": 0.2
+        }
+      },
+      "id": "0e456063-5e7a-42d7-a0be-7381aa4067d8",
+      "name": "Final Synthesizer Agent",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [
+        816,
+        624
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "TslaIfCqC16MWbfP",
+          "name": "n8n free OpenAI API credits"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const aggregateData = $(\"Parse Proposal Output\").first().json;\n\nconst research = aggregateData.research || {};\nconst competitor = aggregateData.competitor || {};\nconst pricing = aggregateData.pricing || {};\nconst proposalOutput = aggregateData.proposal_output || {};\nconst proposalData = proposalOutput.proposal || {};\n\nfunction cleanTemplateString(str) {\n  if (!str || typeof str !== \"string\") return str;\n  if (str.includes(\"{{ $json\")) return \"\";\n  return str;\n}\n\nfunction cleanArray(arr) {\n  if (!Array.isArray(arr)) return arr;\n  return arr.filter(item => {\n    if (typeof item === \"string\" && item.includes(\"{{ $json\")) return false;\n    return item && item !== \"\";\n  });\n}\n\nconst actualWebsite = aggregateData.company_website || \"\";\nconst actualService = aggregateData.service_to_pitch || \"\";\n\nconst companyName = cleanTemplateString(research.company_name) || actualWebsite || \"Unknown Company\";\nconst industry = cleanTemplateString(research.industry) || \"Not specified\";\nconst website = cleanTemplateString(research.website) || actualWebsite || \"\";\n\nreturn [{\n  json: {\n    overview: {\n      companyName: companyName,\n      industry: industry,\n      website: website,\n      summary: cleanTemplateString(proposalData.executive_summary) || \"Analysis completed for \" + companyName,\n      keyInsights: cleanArray(research.recent_signals) || [\"Company analysis completed\"]\n    },\n    intelligence: {\n      businessModel: cleanTemplateString(research.business_model) || \"To be determined\",\n      targetAudience: cleanTemplateString(research.target_customers) || \"To be determined\",\n      challenges: cleanArray(research.pain_points) || [\"Analysis in progress\"],\n      opportunities: cleanArray(research.opportunities) || [\"Opportunities identified\"],\n      techStack: cleanArray(research.technology_stack_hints) || [\"Technology stack analysis pending\"]\n    },\n    competitive: {\n      competitors: (competitor.main_competitors && competitor.main_competitors.length > 0) ? competitor.main_competitors.map(c => ({\n        name: cleanTemplateString(c.name) || \"Competitor\",\n        strengths: [cleanTemplateString(c.how_to_differentiate) || \"Differentiation strategy\"],\n        weaknesses: [cleanTemplateString(c.weakness) || \"Competitive weakness\"]\n      })) : [{ name: \"Market analysis\", strengths: [\"Competitive analysis\"], weaknesses: [\"In progress\"] }],\n      marketPosition: cleanTemplateString(competitor.positioning_angle) || \"Strategic positioning defined\",\n      differentiators: cleanArray(competitor.unique_value_props) || [\"Unique value propositions identified\"]\n    },\n    pricing: {\n      recommendedTier: cleanTemplateString(pricing.recommended_tier) || \"Growth\",\n      tiers: (pricing.tiers && pricing.tiers.length > 0) ? pricing.tiers.map(t => ({\n        name: cleanTemplateString(t.name) || \"Tier\",\n        price: cleanTemplateString(t.price_range) || \"Custom pricing\",\n        features: cleanArray(t.deliverables) || [\"Features included\"]\n      })) : [\n        { name: \"Starter\", price: \"Contact for pricing\", features: [\"Basic features\"] },\n        { name: \"Growth\", price: \"Contact for pricing\", features: [\"Advanced features\"] },\n        { name: \"Enterprise\", price: \"Contact for pricing\", features: [\"Full features\"] }\n      ],\n      justification: cleanTemplateString(pricing.justification) || \"Pricing tailored to company needs\"\n    },\n    proposal: {\n      outreachEmail: cleanTemplateString(proposalOutput.outreach_email) || \"Personalized outreach email generated\",\n      fullProposal: JSON.stringify(proposalData, null, 2),\n      callToAction: cleanTemplateString(proposalData.call_to_action) || \"Contact us to discuss how we can help your business grow.\"\n    }\n  }\n}];"
+      },
+      "id": "a2ef8a07-5380-4a73-9ed0-5345ac2e5095",
+      "name": "Parse Final Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1168,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              }
+            ]
+          }
+        }
+      },
+      "id": "ee9dfb43-746b-44f3-85fd-202aba1ccbbf",
+      "name": "Return Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1392,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const sessionId = $(\"Input Parser\").first().json.session_id;\n\nif (!global.chatMemory) {\n  global.chatMemory = {};\n}\n\nconst sessionMemory = global.chatMemory[sessionId] || [];\n\nreturn [{\n  json: {\n    session_id: sessionId,\n    messages: sessionMemory,\n    has_memory: sessionMemory.length > 0\n  }\n}];"
+      },
+      "id": "3a2125cd-09a8-4a6e-a66a-4b3f6322f947",
+      "name": "Load Memory",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1584,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const finalOutput = $input.first().json;\nconst inputData = $(\"Input Parser\").first().json;\nconst sessionId = inputData.session_id;\n\nif (!global.chatMemory) {\n  global.chatMemory = {};\n}\n\nif (!global.chatMemory[sessionId]) {\n  global.chatMemory[sessionId] = [];\n}\n\nglobal.chatMemory[sessionId].push({\n  role: \"user\",\n  content: inputData.company_website + \" - \" + inputData.service_to_pitch,\n  timestamp: new Date().toISOString()\n});\n\nglobal.chatMemory[sessionId].push({\n  role: \"assistant\",\n  content: finalOutput.overview?.summary || \"Analysis completed\",\n  timestamp: new Date().toISOString()\n});\n\nif (global.chatMemory[sessionId].length > 20) {\n  global.chatMemory[sessionId] = global.chatMemory[sessionId].slice(-20);\n}\n\nreturn [{\n  json: {\n    success: true,\n    session_id: sessionId,\n    messages_stored: global.chatMemory[sessionId].length\n  }\n}];"
+      },
+      "id": "9ed9685a-3f56-427e-b7c2-a3716b048f4e",
+      "name": "Save to Memory",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1392,
+        528
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Input Parser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Parser": {
+      "main": [
+        [
+          {
+            "node": "Load Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Memory Context": {
+      "main": [
+        [
+          {
+            "node": "Planner Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Planner Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Planner Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Planner Output": {
+      "main": [
+        [
+          {
+            "node": "Research Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Competitor Analysis Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Pricing Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Research Agent": {
+      "main": [
+        [
+          {
+            "node": "Merge Agent Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Agent Results": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Agent Outputs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Competitor Analysis Agent": {
+      "main": [
+        [
+          {
+            "node": "Merge Agent Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Aggregate Agent Outputs": {
+      "main": [
+        [
+          {
+            "node": "Proposal Writer Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Proposal Writer Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Proposal Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Proposal Output": {
+      "main": [
+        [
+          {
+            "node": "Final Synthesizer Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Final Synthesizer Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Final Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Final Output": {
+      "main": [
+        [
+          {
+            "node": "Return Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Save to Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pricing Agent": {
+      "main": [
+        [
+          {
+            "node": "Merge Agent Results",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Return Response": {
+      "main": [
+        []
+      ]
+    },
+    "Load Memory": {
+      "main": [
+        [
+          {
+            "node": "Format Memory Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "f3758ac7-7d25-401b-9762-470dffd3987c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7550320aa80487121c08a9427311dfd202169b9616696f7004a5eaf6cd059b46"
+  },
+  "id": "JAIQB9Qakhce9psd",
+  "tags": [
+    {
+      "name": "multi-agent",
+      "id": "HDmk7HTQdmQIJh30",
+      "updatedAt": "2026-05-12T18:44:02.673Z",
+      "createdAt": "2026-05-12T18:44:02.673Z"
+    },
+    {
+      "name": "ai-workflow",
+      "id": "F9BjQ7N6IaWbphXl",
+      "updatedAt": "2026-05-12T18:44:02.650Z",
+      "createdAt": "2026-05-12T18:44:02.650Z"
+    }
+  ]
+}
